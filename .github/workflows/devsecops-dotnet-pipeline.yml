@@ -1,0 +1,1089 @@
+name: DevSecOps Pipeline - .NET Shift Left Security
+
+on:
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOTNET_VERSION: '8.0'
+
+jobs:
+  # ============================================================================
+  # STAGE 1: STATIC APPLICATION SECURITY TESTING (SAST)
+  # ============================================================================
+  sast-sonarqube:
+    name: SAST - SonarQube Code Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore NuGet packages
+        run: dotnet restore
+
+      - name: Build .NET project
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache SonarQube packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Install SonarQube Scanner
+        run: |
+          dotnet tool update dotnet-sonaranalyzer --global || dotnet tool install dotnet-sonaranalyzer --global
+
+      - name: Run SonarQube SAST Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ github.event.repository.name }}
+            -Dsonar.sources=.
+            -Dsonar.exclusions=**/bin/**,**/obj/**,**/.git/**,**/node_modules/**
+
+      - name: SonarQube Quality Gate Check
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # ============================================================================
+  # STAGE 2: SECRET SCANNING
+  # ============================================================================
+  secret-scanning:
+    name: Secret Scanning - Gitleaks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run Gitleaks scan
+        id: gitleaks
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/repo \
+            zricethezav/gitleaks:latest detect \
+            --source="/repo" \
+            --report-format=sarif \
+            --report-path=/tmp/gitleaks.sarif \
+            --exit-code=1
+        continue-on-error: true
+
+      - name: Count Findings
+        id: parse
+        run: |
+          if [ -f /tmp/gitleaks.sarif ]; then
+            COUNT=$(jq '.runs[0].results | length' /tmp/gitleaks.sarif)
+            echo "count=$COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: /tmp/gitleaks.sarif
+
+      - name: Send Slack Alert
+        if: steps.parse.outputs.count > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🚨 Secrets detected in ${{ github.repository }} (${{ github.ref }}) - Count: ${{ steps.parse.outputs.count }}\"
+                    }" \
+                    "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Fail Pipeline
+        if: steps.parse.outputs.count > 0
+        run: exit 1
+
+  # ============================================================================
+  # STAGE 3: SOFTWARE COMPOSITION ANALYSIS (SCA) - .NET
+  # ============================================================================
+  sca-dependency-check:
+    name: SCA - OWASP Dependency Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore NuGet packages
+        run: dotnet restore
+
+      - name: Run dotnet list package --vulnerable
+        id: nuget-audit
+        run: |
+          dotnet list package --vulnerable > /tmp/nuget-report.txt 2>&1 || true
+          cat /tmp/nuget-report.txt
+
+      - name: Create Dependency Check suppression file
+        run: |
+          cat > /tmp/dependency-check-suppression.xml << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.2.0.xsd">
+            <!-- Add CVE suppressions here as needed -->
+          </suppressions>
+          EOF
+
+      - name: Run OWASP Dependency Check
+        id: dependency-check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'DotNet-Application'
+          path: '.'
+          format: 'SARIF'
+          args: >
+            --enableExperimental
+            --enableRetired
+            --suppression=/tmp/dependency-check-suppression.xml
+            --failOnCVSS 7.0
+        continue-on-error: true
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Parse Dependency Check Results
+        id: parse
+        run: |
+          if [ -f dependency-check-report.sarif ]; then
+            TOTAL=$(jq '.runs[0].results | length' dependency-check-report.sarif)
+            CRITICAL=$(jq '[.runs[0].results[] | select(.properties.security-severity >= 9)] | length' dependency-check-report.sarif)
+            HIGH=$(jq '[.runs[0].results[] | select(.properties.security-severity >= 7 and .properties.security-severity < 9)] | length' dependency-check-report.sarif)
+            echo "total=$TOTAL" >> $GITHUB_OUTPUT
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+          else
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Dependency Check Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'dependency-check-report.sarif'
+          category: 'dependency-check'
+
+      - name: Save Report as Artifact
+        uses: actions/upload-artifact@v3
+        if: always() && hashFiles('dependency-check-report.sarif') != ''
+        with:
+          name: dependency-check-report
+          path: dependency-check-report.sarif
+          retention-days: 30
+
+      - name: Create Dependency Summary
+        if: always()
+        run: |
+          cat > /tmp/dependency-summary.md << 'EOF'
+          # 📦 Dependency Check Report
+          
+          **Date:** $(date)
+          **Repository:** ${{ github.repository }}
+          **Branch:** ${{ github.ref }}
+          **Commit:** ${{ github.sha }}
+          
+          ## Summary
+          - **Total Vulnerabilities:** ${{ steps.parse.outputs.total }}
+          - **Critical (CVSS >= 9):** ${{ steps.parse.outputs.critical }}
+          - **High (CVSS 7-8.9):** ${{ steps.parse.outputs.high }}
+          
+          ## Action Required
+          - Review full report in GitHub Security tab
+          - Update vulnerable NuGet packages
+          - Retest after fixes
+          EOF
+          cat /tmp/dependency-summary.md
+
+      - name: Send Slack Alert (Critical)
+        if: steps.parse.outputs.critical > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🚨 CRITICAL DEPENDENCY VULNERABILITIES DETECTED\",
+            \"blocks\": [
+              {
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"*🚨 CRITICAL DEPENDENCIES*\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref }}\n*Critical:* ${{ steps.parse.outputs.critical }}\n*High:* ${{ steps.parse.outputs.high }}\n*Total:* ${{ steps.parse.outputs.total }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
+                }
+              }
+            ]
+          }" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Send Slack Alert (High)
+        if: steps.parse.outputs.critical == 0 && steps.parse.outputs.high > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"⚠️ HIGH severity dependency vulnerabilities found\",
+            \"blocks\": [
+              {
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"*⚠️ HIGH DEPENDENCIES*\n*Repo:* ${{ github.repository }}\n*High:* ${{ steps.parse.outputs.high }}\n*Total:* ${{ steps.parse.outputs.total }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
+                }
+              }
+            ]
+          }" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Fail on Critical Vulnerabilities
+        if: steps.parse.outputs.critical > 0
+        run: |
+          echo "❌ CRITICAL vulnerabilities detected!"
+          exit 1
+
+      - name: Warn on High Vulnerabilities
+        if: steps.parse.outputs.critical == 0 && steps.parse.outputs.high > 0
+        run: |
+          echo "⚠️ HIGH vulnerabilities detected. Fix within SLA."
+
+  # ============================================================================
+  # STAGE 4: SECURITY CODE ANALYSIS - .NET Specific (SecurityCodeScan)
+  # ============================================================================
+  sca-security-code-scan:
+    name: SCA - SecurityCodeScan .NET
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install SecurityCodeScan
+        run: dotnet tool install --global security-code-scan || dotnet tool update --global security-code-scan
+
+      - name: Restore NuGet packages
+        run: dotnet restore
+
+      - name: Run SecurityCodeScan
+        run: |
+          dotnet build /p:EnableSecurityCodeScan=true 2>&1 | tee /tmp/security-scan.log || true
+
+      - name: Parse SecurityCodeScan Results
+        run: |
+          if grep -q "error:" /tmp/security-scan.log; then
+            echo "❌ Security issues found in code scan"
+            cat /tmp/security-scan.log
+          else
+            echo "✅ No security issues found"
+          fi
+
+  # ============================================================================
+  # STAGE 5: BUILD & SCAN CONTAINER SECURITY
+  # ============================================================================
+  build-and-scan-container:
+    name: Build, Scan & Push Container
+    runs-on: ubuntu-latest
+    needs: [sast-sonarqube, secret-scanning, sca-dependency-check, sca-security-code-scan]
+    permissions:
+      contents: read
+      security-events: write
+      packages: write
+      id-token: write
+
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+
+    outputs:
+      image-uri: ${{ steps.image.outputs.image_uri }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save image for scanning
+        run: |
+          docker save ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} -o /tmp/image.tar
+
+      - name: Run Trivy Scan
+        id: trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: '/tmp/image.tar'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+        continue-on-error: true
+
+      - name: Run Grype Scan
+        id: grype
+        uses: anchore/scan-action@v3
+        with:
+          path: '/tmp/image.tar'
+          fail-build: false
+          severity-cutoff: high
+        continue-on-error: true
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Parse Container Scan Results
+        id: parse
+        run: |
+          # Trivy
+          if [ -f trivy-results.sarif ]; then
+            TRIVY_TOTAL=$(jq '.runs[0].results | length' trivy-results.sarif)
+            TRIVY_CRITICAL=$(jq '[.runs[0].results[] | select(.level=="error")] | length' trivy-results.sarif)
+            TRIVY_HIGH=$(jq '[.runs[0].results[] | select(.level=="warning")] | length' trivy-results.sarif)
+          else
+            TRIVY_TOTAL=0; TRIVY_CRITICAL=0; TRIVY_HIGH=0
+          fi
+
+          # Grype
+          if [ -f "${{ steps.grype.outputs.sarif }}" ]; then
+            GRYPE_TOTAL=$(jq '.runs[0].results | length' "${{ steps.grype.outputs.sarif }}")
+            GRYPE_CRITICAL=$(jq '[.runs[0].results[] | select(.level=="error")] | length' "${{ steps.grype.outputs.sarif }}")
+            GRYPE_HIGH=$(jq '[.runs[0].results[] | select(.level=="warning")] | length' "${{ steps.grype.outputs.sarif }}")
+          else
+            GRYPE_TOTAL=0; GRYPE_CRITICAL=0; GRYPE_HIGH=0
+          fi
+
+          echo "trivy_critical=$TRIVY_CRITICAL" >> $GITHUB_OUTPUT
+          echo "trivy_high=$TRIVY_HIGH" >> $GITHUB_OUTPUT
+          echo "grype_critical=$GRYPE_CRITICAL" >> $GITHUB_OUTPUT
+          echo "grype_high=$GRYPE_HIGH" >> $GITHUB_OUTPUT
+
+      - name: Upload Trivy Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      - name: Upload Grype Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always() && steps.grype.outputs.sarif != ''
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype
+
+      - name: Slack Alert - Critical
+        if: (steps.parse.outputs.trivy_critical > 0 || steps.parse.outputs.grype_critical > 0) && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          TOTAL_CRITICAL=$((
+            ${{ steps.parse.outputs.trivy_critical }} + 
+            ${{ steps.parse.outputs.grype_critical }}
+          ))
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{\"text\":\"🚨 Critical container vulnerabilities: $TOTAL_CRITICAL in ${{ github.repository }}\"}" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Fail on Critical
+        if: steps.parse.outputs.trivy_critical > 0 || steps.parse.outputs.grype_critical > 0
+        run: |
+          TOTAL_CRITICAL=$((
+            ${{ steps.parse.outputs.trivy_critical }} + 
+            ${{ steps.parse.outputs.grype_critical }}
+          ))
+          echo "❌ Found $TOTAL_CRITICAL critical vulnerabilities"
+          exit 1
+
+      - name: Push to GitHub Container Registry
+        if: success() && github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set Image URI Output
+        id: image
+        run: echo "image_uri=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  # ============================================================================
+  # STAGE 6: INFRASTRUCTURE AS CODE (IAC) SCANNING
+  # ============================================================================
+  iac-scanning:
+    name: IaC Security - Checkov
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run Checkov Scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform,kubernetes,dockerfile,yaml,json
+          output_format: sarif
+          output_file_path: reports/checkov.sarif
+          soft_fail: true
+        continue-on-error: true
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Parse IaC Results
+        id: parse
+        run: |
+          if [ -f reports/checkov.sarif ]; then
+            CHECKOV_TOTAL=$(jq '.runs[0].results | length' reports/checkov.sarif)
+            CHECKOV_CRITICAL=$(jq '[.runs[0].results[] | select(.properties.security-severity >= 9)] | length' reports/checkov.sarif)
+            CHECKOV_HIGH=$(jq '[.runs[0].results[] | select(.properties.security-severity >= 7 and .properties.security-severity < 9)] | length' reports/checkov.sarif)
+          else
+            CHECKOV_TOTAL=0
+            CHECKOV_CRITICAL=0
+            CHECKOV_HIGH=0
+          fi
+          echo "checkov_total=$CHECKOV_TOTAL" >> $GITHUB_OUTPUT
+          echo "checkov_critical=$CHECKOV_CRITICAL" >> $GITHUB_OUTPUT
+          echo "checkov_high=$CHECKOV_HIGH" >> $GITHUB_OUTPUT
+
+      - name: Upload Checkov Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always() && hashFiles('reports/checkov.sarif') != ''
+        with:
+          sarif_file: reports/checkov.sarif
+          category: checkov
+
+      - name: Create IaC Summary
+        run: |
+          cat > reports/iac-summary.md << EOF
+          # 🏗️ IaC Security Report
+
+          Repo: ${{ github.repository }}
+          Branch: ${{ github.ref }}
+
+          ## Checkov Results
+          - Critical: ${{ steps.parse.outputs.checkov_critical }}
+          - High: ${{ steps.parse.outputs.checkov_high }}
+          - Total: ${{ steps.parse.outputs.checkov_total }}
+          EOF
+
+      - name: Comment PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: reports/iac-summary.md
+
+      - name: Slack Alert
+        if: |
+          steps.parse.outputs.checkov_critical > 0 &&
+          secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{\"text\":\"🚨 IaC critical issues in ${{ github.repository }} | Critical: ${{ steps.parse.outputs.checkov_critical }}\"}" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Fail on Issues
+        if: steps.parse.outputs.checkov_critical > 0
+        run: |
+          echo "❌ IaC validation failed"
+          exit 1
+
+      - name: Upload Reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: iac-reports
+          path: reports/
+
+  # ============================================================================
+  # STAGE 7: UNIT TESTS & CODE COVERAGE
+  # ============================================================================
+  unit-tests:
+    name: Unit Tests & Code Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore NuGet packages
+        run: dotnet restore
+
+      - name: Build project
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run unit tests with coverage
+        run: |
+          dotnet test \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger:"trx;LogFileName=test-results.trx" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory=./coverage
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: |
+            **/TestResults/
+            coverage/
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: '**/test-results.trx'
+
+      - name: Create coverage comment
+        if: github.event_name == 'pull_request'
+        run: |
+          # This is a placeholder for coverage report
+          echo "Code coverage report generated. Check artifacts for details."
+
+  # ============================================================================
+  # STAGE 8: DYNAMIC APPLICATION SECURITY TESTING (DAST)
+  # ============================================================================
+  dast-owasp-zap:
+    name: DAST - OWASP ZAP Scan
+    runs-on: ubuntu-latest
+    needs: build-and-scan-container
+    permissions:
+      contents: read
+      security-events: write
+
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Image
+        run: docker pull ${{ needs.build-and-scan-container.outputs.image-uri }}
+
+      - name: Start Application
+        id: app
+        run: |
+          CONTAINER_ID=$(docker run -d \
+            -p 8080:8080 \
+            --name testapp \
+            --health-cmd="curl -f http://127.0.0.1:8080/health || exit 1" \
+            --health-interval=5s \
+            --health-timeout=5s \
+            --health-retries=12 \
+            ${{ needs.build-and-scan-container.outputs.image-uri }})
+          
+          echo "container_id=$CONTAINER_ID" >> $GITHUB_OUTPUT
+
+          echo "⏳ Waiting for app..."
+          for i in {1..30}; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_ID 2>/dev/null || echo "starting")
+            echo "  Attempt $i: Status = $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "✅ App is healthy!"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ App failed to start"
+              docker logs $CONTAINER_ID
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Run OWASP ZAP Scan
+        id: zap
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:8080'
+          cmd_options: '-a -J zap.json'
+          format: 'sarif'
+          output_file: 'zap-report.sarif'
+        continue-on-error: true
+        timeout-minutes: 20
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Parse ZAP Results
+        id: parse
+        run: |
+          if [ -f zap-report.sarif ]; then
+            ZAP_TOTAL=$(jq '.runs[0].results | length' zap-report.sarif)
+            ZAP_CRITICAL=$(jq '[.runs[0].results[] | select(.level=="error")] | length' zap-report.sarif)
+            ZAP_HIGH=$(jq '[.runs[0].results[] | select(.level=="warning")] | length' zap-report.sarif)
+            ZAP_MEDIUM=$(jq '[.runs[0].results[] | select(.level=="note")] | length' zap-report.sarif)
+          else
+            ZAP_TOTAL=0
+            ZAP_CRITICAL=0
+            ZAP_HIGH=0
+            ZAP_MEDIUM=0
+          fi
+
+          echo "zap_total=$ZAP_TOTAL" >> $GITHUB_OUTPUT
+          echo "zap_critical=$ZAP_CRITICAL" >> $GITHUB_OUTPUT
+          echo "zap_high=$ZAP_HIGH" >> $GITHUB_OUTPUT
+          echo "zap_medium=$ZAP_MEDIUM" >> $GITHUB_OUTPUT
+
+      - name: Upload ZAP Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always() && hashFiles('zap-report.sarif') != ''
+        with:
+          sarif_file: zap-report.sarif
+          category: zap-dast
+
+      - name: Upload Report Artifact
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: zap-report
+          path: zap-report.sarif
+
+      - name: Create Summary
+        run: |
+          echo "DAST Summary:"
+          echo "Critical: ${{ steps.parse.outputs.zap_critical }}"
+          echo "High: ${{ steps.parse.outputs.zap_high }}"
+          echo "Medium: ${{ steps.parse.outputs.zap_medium }}"
+
+      - name: Slack Alert
+        if: (steps.parse.outputs.zap_critical > 0 || steps.parse.outputs.zap_high > 0) && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{\"text\":\"🚨 DAST Issues - Critical: ${{ steps.parse.outputs.zap_critical }}, High: ${{ steps.parse.outputs.zap_high }}\"}" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Fail Pipeline
+        if: steps.parse.outputs.zap_critical > 0
+        run: exit 1
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop testapp 2>/dev/null || true
+          docker rm testapp 2>/dev/null || true
+
+  # ============================================================================
+  # STAGE 9: SECURITY REPORT GENERATION
+  # ============================================================================
+  security-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: [sast-sonarqube, secret-scanning, sca-dependency-check, sca-security-code-scan, 
+            build-and-scan-container, iac-scanning, unit-tests, dast-owasp-zap]
+    if: always()
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Collect Job Results
+        id: collect
+        run: |
+          cat > results.json << EOF
+          {
+            "sast": "${{ needs.sast-sonarqube.result }}",
+            "secrets": "${{ needs.secret-scanning.result }}",
+            "sca": "${{ needs.sca-dependency-check.result }}",
+            "code-scan": "${{ needs.sca-security-code-scan.result }}",
+            "container": "${{ needs.build-and-scan-container.result }}",
+            "iac": "${{ needs.iac-scanning.result }}",
+            "unit-tests": "${{ needs.unit-tests.result }}",
+            "dast": "${{ needs.dast-owasp-zap.result }}"
+          }
+          EOF
+
+          PASSED=0
+          FAILED=0
+
+          for stage in sast secrets sca code-scan container iac unit-tests dast; do
+            result=$(jq -r ".$stage" results.json)
+            if [ "$result" = "success" ]; then
+              ((PASSED++))
+            elif [ "$result" = "failure" ]; then
+              ((FAILED++))
+            fi
+          done
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+      - name: Generate Security Report
+        id: report
+        run: |
+          cat > SECURITY_REPORT.md << EOF
+          # 🔐 DevSecOps Security Report - .NET Application
+
+          **Repository:** ${{ github.repository }}
+          **Branch:** ${{ github.ref }}
+          **Commit:** ${{ github.sha }}
+          **Date:** $(date -u)
+
+          ## Overall Status
+
+          **Passed:** ${{ steps.collect.outputs.passed }}/8  
+          **Failed:** ${{ steps.collect.outputs.failed }}/8
+
+          EOF
+
+          if [ "${{ steps.collect.outputs.failed }}" -eq 0 ]; then
+            echo "**Overall:** ✅ PASSED" >> SECURITY_REPORT.md
+            STATUS="PASS"
+          else
+            echo "**Overall:** ❌ FAILED" >> SECURITY_REPORT.md
+            STATUS="FAIL"
+          fi
+
+          echo "" >> SECURITY_REPORT.md
+          echo "## Stage Results" >> SECURITY_REPORT.md
+          echo "" >> SECURITY_REPORT.md
+
+          for stage in sast secrets sca code-scan container iac unit-tests dast; do
+            result=$(jq -r ".$stage" results.json)
+            if [ "$result" = "success" ]; then
+              echo "- **$stage:** ✅ Passed" >> SECURITY_REPORT.md
+            elif [ "$result" = "failure" ]; then
+              echo "- **$stage:** ❌ Failed" >> SECURITY_REPORT.md
+            else
+              echo "- **$stage:** ⚠️ Skipped" >> SECURITY_REPORT.md
+            fi
+          done
+
+          echo "overall_status=$STATUS" >> $GITHUB_OUTPUT
+
+          cat SECURITY_REPORT.md
+
+      - name: Comment PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: SECURITY_REPORT.md
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-report
+          path: SECURITY_REPORT.md
+
+      - name: Slack Success
+        if: steps.report.outputs.overall_status == 'PASS' && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "✅ Security Scan Passed",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*All security checks passed*\nRepo: ${{ github.repository }}\nCommit: ${{ github.sha }}"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -X POST -H "Content-type: application/json" \
+          --data "$PAYLOAD" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Slack Failure
+        if: steps.report.outputs.overall_status == 'FAIL' && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "❌ Security Scan Failed",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Security issues detected*\nRepo: ${{ github.repository }}\nFailed stages: ${{ steps.collect.outputs.failed }}"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -X POST -H "Content-type: application/json" \
+          --data "$PAYLOAD" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Enforce Security Gate
+        if: steps.collect.outputs.failed > 0
+        run: |
+          echo "❌ Security gate failed"
+          exit 1
+
+  # ============================================================================
+  # STAGE 10: FINAL PIPELINE STATUS
+  # ============================================================================
+  pipeline-status:
+    name: Pipeline Status
+    runs-on: ubuntu-latest
+    needs: [sast-sonarqube, secret-scanning, sca-dependency-check, sca-security-code-scan,
+            build-and-scan-container, iac-scanning, unit-tests, dast-owasp-zap, security-report]
+    if: always()
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Collect Pipeline Results
+        id: collect
+        run: |
+          CRITICAL_FAILED=0
+          SAST="${{ needs.sast-sonarqube.result }}"
+          SECRETS="${{ needs.secret-scanning.result }}"
+          CONTAINER="${{ needs.build-and-scan-container.result }}"
+
+          for result in "$SAST" "$SECRETS" "$CONTAINER"; do
+            if [ "$result" = "failure" ]; then
+              ((CRITICAL_FAILED++))
+            fi
+          done
+
+          NONCRITICAL_FAILED=0
+          SCA="${{ needs.sca-dependency-check.result }}"
+          CODE_SCAN="${{ needs.sca-security-code-scan.result }}"
+          IAC="${{ needs.iac-scanning.result }}"
+          TESTS="${{ needs.unit-tests.result }}"
+          DAST="${{ needs.dast-owasp-zap.result }}"
+
+          for result in "$SCA" "$CODE_SCAN" "$IAC" "$TESTS" "$DAST"; do
+            if [ "$result" = "failure" ]; then
+              ((NONCRITICAL_FAILED++))
+            fi
+          done
+
+          echo "critical_failed=$CRITICAL_FAILED" >> $GITHUB_OUTPUT
+          echo "noncritical_failed=$NONCRITICAL_FAILED" >> $GITHUB_OUTPUT
+
+          if [ "$CRITICAL_FAILED" -eq 0 ]; then
+            echo "overall_status=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=FAIL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Print Pipeline Summary
+        run: |
+          cat <<EOF
+
+          ╔════════════════════════════════════════════════════════╗
+          ║   🔐 DevSecOps Pipeline Final Status Report (.NET)     ║
+          ╚════════════════════════════════════════════════════════╝
+
+          🔴 CRITICAL:
+            SAST:        ${{ needs.sast-sonarqube.result }}
+            Secrets:     ${{ needs.secret-scanning.result }}
+            Container:   ${{ needs.build-and-scan-container.result }}
+
+          🟡 NON-CRITICAL:
+            SCA:         ${{ needs.sca-dependency-check.result }}
+            Code Scan:   ${{ needs.sca-security-code-scan.result }}
+            IaC:         ${{ needs.iac-scanning.result }}
+            Tests:       ${{ needs.unit-tests.result }}
+            DAST:        ${{ needs.dast-owasp-zap.result }}
+
+          📊 SUMMARY:
+            Critical Failed:     ${{ steps.collect.outputs.critical_failed }}
+            Non-Critical Failed: ${{ steps.collect.outputs.noncritical_failed }}
+            Overall Status:      ${{ steps.collect.outputs.overall_status }}
+
+          EOF
+
+      - name: Enforce Critical Security Gate
+        if: steps.collect.outputs.critical_failed > 0
+        run: |
+          echo "❌ Critical security failures detected"
+          exit 1
+
+      - name: Warn on Non-Critical Failures
+        if: steps.collect.outputs.noncritical_failed > 0 && steps.collect.outputs.critical_failed == 0
+        run: |
+          echo "⚠️ Non-critical issues found. Fix soon."
+
+      - name: Success
+        if: steps.collect.outputs.critical_failed == 0 && steps.collect.outputs.noncritical_failed == 0
+        run: |
+          echo "✅ All security checks passed. Ready for deployment."
+
+      - name: Slack Alert - Critical
+        if: steps.collect.outputs.critical_failed > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "🚨 Critical Security Failures",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*CRITICAL SECURITY FAILURE*\nRepo: ${{ github.repository }}\nFailed: ${{ steps.collect.outputs.critical_failed }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Pipeline>"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -X POST -H "Content-type: application/json" \
+          --data "$PAYLOAD" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Slack Alert - Warning
+        if: steps.collect.outputs.noncritical_failed > 0 && steps.collect.outputs.critical_failed == 0 && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "⚠️ Non-Critical Issues",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*NON-CRITICAL ISSUES*\nRepo: ${{ github.repository }}\nCount: ${{ steps.collect.outputs.noncritical_failed }}\nMerge allowed"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -X POST -H "Content-type: application/json" \
+          --data "$PAYLOAD" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Slack Alert - Success
+        if: steps.collect.outputs.critical_failed == 0 && steps.collect.outputs.noncritical_failed == 0 && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "✅ All Security Checks Passed",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*ALL CHECKS PASSED*\nRepo: ${{ github.repository }}\nReady for deployment 🚀"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -X POST -H "Content-type: application/json" \
+          --data "$PAYLOAD" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
