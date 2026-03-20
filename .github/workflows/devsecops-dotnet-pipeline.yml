@@ -29,11 +29,7 @@ jobs:
       # 4. Add PATH
       - run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      # 5. Restore (DIRECT PROJECT)
-      - name: Restore
-        run: dotnet restore TodoApi/TodoApi.csproj
-
-      # 6. Sonar Begin
+      # 5. Sonar Begin (MOVE BEFORE restore/build 🔥)
       - name: Sonar Begin
         run: |
           dotnet sonarscanner begin \
@@ -42,11 +38,15 @@ jobs:
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
 
+      # 6. Restore
+      - name: Restore
+        run: dotnet restore TodoApi/TodoApi.csproj
+
       # 7. Build
       - name: Build
         run: dotnet build TodoApi/TodoApi.csproj --no-restore
 
-      # 8. Test (with coverage)
+      # 8. Test + Coverage
       - name: Test
         run: |
           dotnet test TodoApi.Tests/TodoApi.Tests.csproj \
@@ -54,12 +54,16 @@ jobs:
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=opencover
 
-      # 9. Sonar End
+      # 9. Sonar End (IMPORTANT)
       - name: Sonar End
         run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
 
-      # 10. Quality Gate
-      - name: Quality Gate
+      # 10. Debug (ensure file exists)
+      - name: Check scannerwork
+        run: ls -R .scannerwork
+
+      # 11. Quality Gate ✅
+      - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         env:
