@@ -15,42 +15,34 @@ jobs:
 
     steps:
       # 1. Checkout
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
       # 2. Setup .NET
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # 3. Create SLN (FIXED 💥)
+      # 3. Create Solution (FIXED)
       - name: Create Solution File
         run: |
-          dotnet new sln
-          find . -name "*.sln"
-
-          SLN=$(find . -name "*.sln" | head -n 1)
-          echo "Using SLN: $SLN"
-
-          dotnet sln "$SLN" add TodoApi/TodoApi.csproj
-          dotnet sln "$SLN" add TodoApi.Tests/TodoApi.Tests.csproj
-
-          echo "SLN_PATH=$SLN" >> $GITHUB_ENV
+          echo "Creating solution..."
+          dotnet new sln -o .
+          echo "Adding projects..."
+          dotnet sln add ./TodoApi/TodoApi.csproj
+          dotnet sln add ./TodoApi.Tests/TodoApi.Tests.csproj
+          echo "Files after creation:"
+          ls -la
 
       # 4. Install SonarScanner
       - name: Install SonarScanner
         run: dotnet tool install --global dotnet-sonarscanner
 
       # 5. Add PATH
-      - name: Add .NET tools to PATH
-        run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+      - run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      # 6. Restore
+      # 6. Restore (IMPORTANT CHANGE)
       - name: Restore
-        run: dotnet restore "$SLN_PATH"
+        run: dotnet restore *.sln
 
       # 7. Sonar Begin
       - name: Sonar Begin
@@ -63,12 +55,12 @@ jobs:
 
       # 8. Build
       - name: Build
-        run: dotnet build "$SLN_PATH" --no-restore
+        run: dotnet build *.sln --no-restore
 
       # 9. Test
-      - name: Test with Coverage
+      - name: Test
         run: |
-          dotnet test "$SLN_PATH" \
+          dotnet test *.sln \
             --no-build \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=opencover
@@ -80,7 +72,6 @@ jobs:
       # 11. Quality Gate
       - name: Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@master
-        timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
