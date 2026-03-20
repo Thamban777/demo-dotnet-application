@@ -27,20 +27,18 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # 3. Debug (optional but useful)
+      # 3. Debug (optional)
       - name: Debug files
         run: |
           pwd
           ls -R
 
-      # 4. Create Solution dynamically ✅
+      # 4. Create Solution (FIXED)
       - name: Create Solution File
         run: |
-          dotnet new sln
-          SLN_FILE=$(ls *.sln)
-          echo "SLN_FILE=$SLN_FILE" >> $GITHUB_ENV
-          dotnet sln $SLN_FILE add TodoApi/TodoApi.csproj
-          dotnet sln $SLN_FILE add TodoApi.Tests/TodoApi.Tests.csproj
+          dotnet new sln -n TodoApp --force
+          dotnet sln TodoApp.sln add TodoApi/TodoApi.csproj
+          dotnet sln TodoApp.sln add TodoApi.Tests/TodoApi.Tests.csproj
 
       # 5. Install SonarScanner
       - name: Install SonarScanner
@@ -52,7 +50,7 @@ jobs:
 
       # 7. Restore
       - name: Restore dependencies
-        run: dotnet restore ${{ env.SLN_FILE }}
+        run: dotnet restore TodoApp.sln
 
       # 8. Sonar Begin
       - name: Sonar Begin
@@ -65,12 +63,12 @@ jobs:
 
       # 9. Build
       - name: Build
-        run: dotnet build ${{ env.SLN_FILE }} --no-restore
+        run: dotnet build TodoApp.sln --no-restore
 
       # 10. Test with Coverage
       - name: Test with Coverage
         run: |
-          dotnet test ${{ env.SLN_FILE }} \
+          dotnet test TodoApp.sln \
             --no-build \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=opencover
