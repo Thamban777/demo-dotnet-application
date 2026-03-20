@@ -105,18 +105,16 @@ try
     .WithOpenApi();
 
     // Create item (protected)
-    app.MapPost("/api/items", (ItemRequest request) => 
-        Results.Created($"/api/items/1", new { id = 1, name = request.Name }))
-    .WithName("CreateItem")
-    .WithOpenApi()
-    .RequireAuthorization();
+    app.MapPost("/api/items", (ItemRequest request) => Results.Created($"/api/items/1", new { id = 1, name = request.Name }))
+        .WithName("CreateItem")
+        .WithOpenApi()
+        .RequireAuthorization();
 
     // Secure endpoint
-    app.MapGet("/api/secure", () => 
-        Results.Ok(new { message = "This is secure data", timestamp = DateTime.UtcNow }))
-    .WithName("SecureData")
-    .WithOpenApi()
-    .RequireAuthorization();
+    app.MapGet("/api/secure", () => Results.Ok(new { message = "This is secure data", timestamp = DateTime.UtcNow }))
+        .WithName("SecureData")
+        .WithOpenApi()
+        .RequireAuthorization();
 
     Log.Information("✅ Application configured successfully");
     await app.RunAsync();
