@@ -8,6 +8,7 @@ on:
 
 env:
   DOTNET_VERSION: '8.0'
+  PROJECT_KEY: 'todo-app'
 
 jobs:
   sonar:
@@ -15,10 +16,12 @@ jobs:
 
     steps:
       # 1. Checkout
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       # 2. Setup .NET
-      - uses: actions/setup-dotnet@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -26,14 +29,15 @@ jobs:
       - name: Install SonarScanner
         run: dotnet tool install --global dotnet-sonarscanner
 
-      # 4. Add PATH
-      - run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+      # 4. Add tool to PATH
+      - name: Add .NET tools to PATH
+        run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      # 5. Sonar Begin (MOVE BEFORE restore/build 🔥)
+      # 5. Sonar Begin
       - name: Sonar Begin
         run: |
           dotnet sonarscanner begin \
-            /k:"todo-app" \
+            /k:"${{ env.PROJECT_KEY }}" \
             /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
@@ -46,7 +50,7 @@ jobs:
       - name: Build
         run: dotnet build TodoApi/TodoApi.csproj --no-restore
 
-      # 8. Test + Coverage
+      # 8. Test with coverage
       - name: Test
         run: |
           dotnet test TodoApi.Tests/TodoApi.Tests.csproj \
@@ -54,21 +58,35 @@ jobs:
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=opencover
 
-      # 9. Sonar End (IMPORTANT)
+      # 9. Sonar End
       - name: Sonar End
         run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
 
-      # 10. Debug (ensure file exists)
-      - name: Check scannerwork
-        run: ls -R .scannerwork
+      # 10. Install jq (for API parsing)
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      # 11. Quality Gate ✅
-      - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@master
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      # 11. Wait for Sonar processing (IMPORTANT)
+      - name: Wait for Sonar Processing
+        run: sleep 10
+
+      # 12. Quality Gate Check via API ✅
+      - name: Quality Gate Check
+        run: |
+          echo "Checking Quality Gate..."
+
+          STATUS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=${{ env.PROJECT_KEY }}" \
+            | jq -r '.projectStatus.status')
+
+          echo "Quality Gate Status: $STATUS"
+
+          if [ "$STATUS" != "OK" ]; then
+            echo "❌ Quality Gate Failed"
+            exit 1
+          else
+            echo "✅ Quality Gate Passed"
+          fi
 # STAGE 2: SECRET SCANNING
           
   #           # ============================================================================
