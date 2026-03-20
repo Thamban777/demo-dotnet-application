@@ -1,0 +1,10 @@
+.git
+.gitignore
+*.md
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.log
+coverage/
