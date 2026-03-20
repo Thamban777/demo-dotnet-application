@@ -31,9 +31,11 @@ jobs:
       # ⭐ ADD HERE ⭐
       - name: Create Solution File
         run: |
+          pwd
+          ls -R
           dotnet new sln -n TodoApp
-          dotnet sln add TodoApi/TodoApi.csproj
-          dotnet sln add TodoApi.Tests/TodoApi.Tests.csproj          
+          dotnet sln TodoApp.sln add TodoApi/TodoApi.csproj
+          dotnet sln TodoApp.sln add TodoApi.Tests/TodoApi.Tests.csproj         
 
       # 3. Install SonarScanner
       - name: Install SonarScanner
