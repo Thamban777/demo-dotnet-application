@@ -22,29 +22,18 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # 3. Create Solution (FIXED)
-      - name: Create Solution File
-        run: |
-          echo "Creating solution..."
-          dotnet new sln -o .
-          echo "Adding projects..."
-          dotnet sln add ./TodoApi/TodoApi.csproj
-          dotnet sln add ./TodoApi.Tests/TodoApi.Tests.csproj
-          echo "Files after creation:"
-          ls -la
-
-      # 4. Install SonarScanner
+      # 3. Install SonarScanner
       - name: Install SonarScanner
         run: dotnet tool install --global dotnet-sonarscanner
 
-      # 5. Add PATH
+      # 4. Add PATH
       - run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      # 6. Restore (IMPORTANT CHANGE)
+      # 5. Restore (DIRECT PROJECT)
       - name: Restore
-        run: dotnet restore *.sln
+        run: dotnet restore TodoApi/TodoApi.csproj
 
-      # 7. Sonar Begin
+      # 6. Sonar Begin
       - name: Sonar Begin
         run: |
           dotnet sonarscanner begin \
@@ -53,25 +42,26 @@ jobs:
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
 
-      # 8. Build
+      # 7. Build
       - name: Build
-        run: dotnet build *.sln --no-restore
+        run: dotnet build TodoApi/TodoApi.csproj --no-restore
 
-      # 9. Test
+      # 8. Test (with coverage)
       - name: Test
         run: |
-          dotnet test *.sln \
+          dotnet test TodoApi.Tests/TodoApi.Tests.csproj \
             --no-build \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=opencover
 
-      # 10. Sonar End
+      # 9. Sonar End
       - name: Sonar End
         run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
 
-      # 11. Quality Gate
+      # 10. Quality Gate
       - name: Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
