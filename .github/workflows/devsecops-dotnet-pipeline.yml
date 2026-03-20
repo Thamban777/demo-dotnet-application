@@ -75,14 +75,19 @@ jobs:
         run: |
           echo "Checking Quality Gate..."
 
-          RESPONSE=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=${{ env.PROJECT_KEY }}")
+          URL="${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=${{ env.PROJECT_KEY }}"
+          echo "Calling URL: $URL"
+
+          RESPONSE=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: "$URL")
 
           echo "Raw Response:"
           echo "$RESPONSE"
 
-          # Validate JSON
-          echo "$RESPONSE" | jq . || { echo "❌ Invalid JSON response"; exit 1; }
+          # Check if HTML வந்தா → fail immediately
+          if echo "$RESPONSE" | grep -q "<html>"; then
+            echo "❌ Got HTML instead of JSON → WRONG URL or AUTH ISSUE"
+            exit 1
+          fi
 
           STATUS=$(echo "$RESPONSE" | jq -r '.projectStatus.status')
 
