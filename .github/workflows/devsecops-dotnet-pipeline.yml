@@ -11,7 +11,6 @@ env:
 
 jobs:
   sonar:
-    name: SonarQube Analysis
     runs-on: ubuntu-latest
 
     steps:
@@ -27,32 +26,33 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # 3. Debug (optional)
-      - name: Debug files
-        run: |
-          pwd
-          ls -R
-
-      # 4. Create Solution (FIXED)
+      # 3. Create SLN (FIXED 💥)
       - name: Create Solution File
         run: |
-          dotnet new sln -n TodoApp --force
-          dotnet sln TodoApp.sln add TodoApi/TodoApi.csproj
-          dotnet sln TodoApp.sln add TodoApi.Tests/TodoApi.Tests.csproj
+          dotnet new sln
+          find . -name "*.sln"
 
-      # 5. Install SonarScanner
+          SLN=$(find . -name "*.sln" | head -n 1)
+          echo "Using SLN: $SLN"
+
+          dotnet sln "$SLN" add TodoApi/TodoApi.csproj
+          dotnet sln "$SLN" add TodoApi.Tests/TodoApi.Tests.csproj
+
+          echo "SLN_PATH=$SLN" >> $GITHUB_ENV
+
+      # 4. Install SonarScanner
       - name: Install SonarScanner
         run: dotnet tool install --global dotnet-sonarscanner
 
-      # 6. Add tool to PATH
+      # 5. Add PATH
       - name: Add .NET tools to PATH
         run: echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      # 7. Restore
-      - name: Restore dependencies
-        run: dotnet restore TodoApp.sln
+      # 6. Restore
+      - name: Restore
+        run: dotnet restore "$SLN_PATH"
 
-      # 8. Sonar Begin
+      # 7. Sonar Begin
       - name: Sonar Begin
         run: |
           dotnet sonarscanner begin \
@@ -61,24 +61,24 @@ jobs:
             /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
 
-      # 9. Build
+      # 8. Build
       - name: Build
-        run: dotnet build TodoApp.sln --no-restore
+        run: dotnet build "$SLN_PATH" --no-restore
 
-      # 10. Test with Coverage
+      # 9. Test
       - name: Test with Coverage
         run: |
-          dotnet test TodoApp.sln \
+          dotnet test "$SLN_PATH" \
             --no-build \
             /p:CollectCoverage=true \
             /p:CoverletOutputFormat=opencover
 
-      # 11. Sonar End
+      # 10. Sonar End
       - name: Sonar End
         run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
 
-      # 12. Quality Gate
-      - name: SonarQube Quality Gate
+      # 11. Quality Gate
+      - name: Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         env:
