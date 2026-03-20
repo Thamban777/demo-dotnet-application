@@ -75,9 +75,16 @@ jobs:
         run: |
           echo "Checking Quality Gate..."
 
-          STATUS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=${{ env.PROJECT_KEY }}" \
-            | jq -r '.projectStatus.status')
+          RESPONSE=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=${{ env.PROJECT_KEY }}")
+
+          echo "Raw Response:"
+          echo "$RESPONSE"
+
+          # Validate JSON
+          echo "$RESPONSE" | jq . || { echo "❌ Invalid JSON response"; exit 1; }
+
+          STATUS=$(echo "$RESPONSE" | jq -r '.projectStatus.status')
 
           echo "Quality Gate Status: $STATUS"
 
