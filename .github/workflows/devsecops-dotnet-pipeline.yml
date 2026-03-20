@@ -122,13 +122,16 @@ jobs:
           sarif_file: /tmp/gitleaks.sarif
 
       - name: Send Slack Alert
-        if: steps.parse.outputs.count > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.parse.outputs.count > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           curl -X POST -H 'Content-type: application/json' \
           --data "{
             \"text\": \"🚨 Secrets detected in ${{ github.repository }} (${{ github.ref }}) - Count: ${{ steps.parse.outputs.count }}\"
                     }" \
-                    "${{ secrets.SLACK_WEBHOOK_URL }}"
+                    "$SLACK_WEBHOOK_URL"
 
       - name: Fail Pipeline
         if: steps.parse.outputs.count > 0
@@ -243,8 +246,11 @@ jobs:
           cat /tmp/dependency-summary.md
 
       - name: Send Slack Alert (Critical)
-        if: steps.parse.outputs.critical > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.parse.outputs.critical > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           curl -X POST -H 'Content-type: application/json' \
           --data "{
             \"text\": \"🚨 CRITICAL DEPENDENCY VULNERABILITIES DETECTED\",
@@ -258,11 +264,14 @@ jobs:
               }
             ]
           }" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Send Slack Alert (High)
-        if: steps.parse.outputs.critical == 0 && steps.parse.outputs.high > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.parse.outputs.critical == 0 && steps.parse.outputs.high > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           curl -X POST -H 'Content-type: application/json' \
           --data "{
             \"text\": \"⚠️ HIGH severity dependency vulnerabilities found\",
@@ -276,7 +285,7 @@ jobs:
               }
             ]
           }" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Fail on Critical Vulnerabilities
         if: steps.parse.outputs.critical > 0
@@ -451,15 +460,18 @@ jobs:
           category: grype
 
       - name: Slack Alert - Critical
-        if: (steps.parse.outputs.trivy_critical > 0 || steps.parse.outputs.grype_critical > 0) && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.parse.outputs.trivy_critical > 0 || steps.parse.outputs.grype_critical > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           TOTAL_CRITICAL=$((
             ${{ steps.parse.outputs.trivy_critical }} + 
             ${{ steps.parse.outputs.grype_critical }}
           ))
           curl -X POST -H 'Content-type: application/json' \
           --data "{\"text\":\"🚨 Critical container vulnerabilities: $TOTAL_CRITICAL in ${{ github.repository }}\"}" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Fail on Critical
         if: steps.parse.outputs.trivy_critical > 0 || steps.parse.outputs.grype_critical > 0
@@ -562,13 +574,14 @@ jobs:
           path: reports/iac-summary.md
 
       - name: Slack Alert
-        if: |
-          steps.parse.outputs.checkov_critical > 0 &&
-          secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.parse.outputs.checkov_critical > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           curl -X POST -H 'Content-type: application/json' \
           --data "{\"text\":\"🚨 IaC critical issues in ${{ github.repository }} | Critical: ${{ steps.parse.outputs.checkov_critical }}\"}" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Fail on Issues
         if: steps.parse.outputs.checkov_critical > 0
@@ -636,7 +649,6 @@ jobs:
       - name: Create coverage comment
         if: github.event_name == 'pull_request'
         run: |
-          # This is a placeholder for coverage report
           echo "Code coverage report generated. Check artifacts for details."
 
   # ============================================================================
@@ -753,11 +765,14 @@ jobs:
           echo "Medium: ${{ steps.parse.outputs.zap_medium }}"
 
       - name: Slack Alert
-        if: (steps.parse.outputs.zap_critical > 0 || steps.parse.outputs.zap_high > 0) && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.parse.outputs.zap_critical > 0 || steps.parse.outputs.zap_high > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           curl -X POST -H 'Content-type: application/json' \
           --data "{\"text\":\"🚨 DAST Issues - Critical: ${{ steps.parse.outputs.zap_critical }}, High: ${{ steps.parse.outputs.zap_high }}\"}" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Fail Pipeline
         if: steps.parse.outputs.zap_critical > 0
@@ -880,8 +895,11 @@ jobs:
           path: SECURITY_REPORT.md
 
       - name: Slack Success
-        if: steps.report.outputs.overall_status == 'PASS' && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.report.outputs.overall_status == 'PASS'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           PAYLOAD=$(cat <<EOF
           {
             "text": "✅ Security Scan Passed",
@@ -899,11 +917,14 @@ jobs:
           )
           curl -X POST -H "Content-type: application/json" \
           --data "$PAYLOAD" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Slack Failure
-        if: steps.report.outputs.overall_status == 'FAIL' && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.report.outputs.overall_status == 'FAIL'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           PAYLOAD=$(cat <<EOF
           {
             "text": "❌ Security Scan Failed",
@@ -921,7 +942,7 @@ jobs:
           )
           curl -X POST -H "Content-type: application/json" \
           --data "$PAYLOAD" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Enforce Security Gate
         if: steps.collect.outputs.failed > 0
@@ -1023,8 +1044,11 @@ jobs:
           echo "✅ All security checks passed. Ready for deployment."
 
       - name: Slack Alert - Critical
-        if: steps.collect.outputs.critical_failed > 0 && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.collect.outputs.critical_failed > 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           PAYLOAD=$(cat <<EOF
           {
             "text": "🚨 Critical Security Failures",
@@ -1042,11 +1066,14 @@ jobs:
           )
           curl -X POST -H "Content-type: application/json" \
           --data "$PAYLOAD" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Slack Alert - Warning
-        if: steps.collect.outputs.noncritical_failed > 0 && steps.collect.outputs.critical_failed == 0 && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.collect.outputs.noncritical_failed > 0 && steps.collect.outputs.critical_failed == 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           PAYLOAD=$(cat <<EOF
           {
             "text": "⚠️ Non-Critical Issues",
@@ -1064,11 +1091,14 @@ jobs:
           )
           curl -X POST -H "Content-type: application/json" \
           --data "$PAYLOAD" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
 
       - name: Slack Alert - Success
-        if: steps.collect.outputs.critical_failed == 0 && steps.collect.outputs.noncritical_failed == 0 && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.collect.outputs.critical_failed == 0 && steps.collect.outputs.noncritical_failed == 0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           PAYLOAD=$(cat <<EOF
           {
             "text": "✅ All Security Checks Passed",
@@ -1086,4 +1116,4 @@ jobs:
           )
           curl -X POST -H "Content-type: application/json" \
           --data "$PAYLOAD" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          "$SLACK_WEBHOOK_URL"
