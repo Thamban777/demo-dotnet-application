@@ -11,6 +11,8 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   DOTNET_VERSION: '8.0'
+  SOLUTION_FILE: 'DemoDotnetApplication.sln'
+  MAIN_PROJECT: 'DemoDotnetApplication/DemoDotnetApplication.csproj'
 
 jobs:
   # ============================================================================
@@ -34,10 +36,10 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore NuGet packages
-        run: dotnet restore
+        run: dotnet restore ${{ env.SOLUTION_FILE }}
 
       - name: Build .NET project
-        run: dotnet build --configuration Release --no-restore
+        run: dotnet build ${{ env.SOLUTION_FILE }} --configuration Release --no-restore
 
       - name: Set up JDK 17
         uses: actions/setup-java@v3
@@ -59,11 +61,11 @@ jobs:
       - name: Run SonarQube SAST Scan
         uses: SonarSource/sonarqube-scan-action@master
         env:
-          SONAR_HOST_URL: "http://44.203.96.47:9000/"
-          SONAR_TOKEN: "squ_a0b65257fd8041ae5a1ac85288fe13d9dd3d9b57"
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.projectKey=${{ github.event.repository.name }}
+            -Dsonar.projectKey=demo-dotnet-application
             -Dsonar.sources=.
             -Dsonar.exclusions=**/bin/**,**/obj/**,**/.git/**,**/node_modules/**
 
@@ -71,11 +73,11 @@ jobs:
         uses: SonarSource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         env:
-          SONAR_TOKEN: "squ_a0b65257fd8041ae5a1ac85288fe13d9dd3d9b57"
-          SONAR_HOST_URL: "http://44.203.96.47:9000/"
-
-  # # ============================================================================
-  # # STAGE 2: SECRET SCANNING
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+# STAGE 2: SECRET SCANNING
+          
+  #           # ============================================================================
   # # ============================================================================
   # secret-scanning:
   #   name: Secret Scanning - Gitleaks
@@ -129,7 +131,7 @@ jobs:
   #         if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
   #         curl -X POST -H 'Content-type: application/json' \
   #         --data "{
-  #           \"text\": \"🚨 Secrets detected in ${{ github.repository }} (${{ github.ref }}) - Count: ${{ steps.parse.outputs.count }}\"
+  #           \"text\": \"🚨 Secrets detected in demo-dotnet-application (${{ github.ref }}) - Count: ${{ steps.parse.outputs.count }}\"
   #                   }" \
   #                   "$SLACK_WEBHOOK_URL"
 
@@ -157,12 +159,12 @@ jobs:
   #         dotnet-version: ${{ env.DOTNET_VERSION }}
 
   #     - name: Restore NuGet packages
-  #       run: dotnet restore
+  #       run: dotnet restore ${{ env.SOLUTION_FILE }}
 
   #     - name: Run dotnet list package --vulnerable
   #       id: nuget-audit
   #       run: |
-  #         dotnet list package --vulnerable > /tmp/nuget-report.txt 2>&1 || true
+  #         dotnet list ${{ env.MAIN_PROJECT }} package --vulnerable > /tmp/nuget-report.txt 2>&1 || true
   #         cat /tmp/nuget-report.txt
 
   #     - name: Create Dependency Check suppression file
@@ -178,7 +180,7 @@ jobs:
   #       id: dependency-check
   #       uses: dependency-check/Dependency-Check_Action@main
   #       with:
-  #         project: 'DotNet-Application'
+  #         project: 'DemoDotnetApplication'
   #         path: '.'
   #         format: 'SARIF'
   #         args: >
@@ -229,7 +231,7 @@ jobs:
   #         # 📦 Dependency Check Report
           
   #         **Date:** $(date)
-  #         **Repository:** ${{ github.repository }}
+  #         **Repository:** demo-dotnet-application
   #         **Branch:** ${{ github.ref }}
   #         **Commit:** ${{ github.sha }}
           
@@ -259,7 +261,7 @@ jobs:
   #               \"type\": \"section\",
   #               \"text\": {
   #                 \"type\": \"mrkdwn\",
-  #                 \"text\": \"*🚨 CRITICAL DEPENDENCIES*\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref }}\n*Critical:* ${{ steps.parse.outputs.critical }}\n*High:* ${{ steps.parse.outputs.high }}\n*Total:* ${{ steps.parse.outputs.total }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
+  #                 \"text\": \"*🚨 CRITICAL DEPENDENCIES*\n*Repo:* demo-dotnet-application\n*Branch:* ${{ github.ref }}\n*Critical:* ${{ steps.parse.outputs.critical }}\n*High:* ${{ steps.parse.outputs.high }}\n*Total:* ${{ steps.parse.outputs.total }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
   #               }
   #             }
   #           ]
@@ -280,7 +282,7 @@ jobs:
   #               \"type\": \"section\",
   #               \"text\": {
   #                 \"type\": \"mrkdwn\",
-  #                 \"text\": \"*⚠️ HIGH DEPENDENCIES*\n*Repo:* ${{ github.repository }}\n*High:* ${{ steps.parse.outputs.high }}\n*Total:* ${{ steps.parse.outputs.total }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
+  #                 \"text\": \"*⚠️ HIGH DEPENDENCIES*\n*Repo:* demo-dotnet-application\n*High:* ${{ steps.parse.outputs.high }}\n*Total:* ${{ steps.parse.outputs.total }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\"
   #               }
   #             }
   #           ]
@@ -321,11 +323,11 @@ jobs:
   #       run: dotnet tool install --global security-code-scan || dotnet tool update --global security-code-scan
 
   #     - name: Restore NuGet packages
-  #       run: dotnet restore
+  #       run: dotnet restore ${{ env.SOLUTION_FILE }}
 
   #     - name: Run SecurityCodeScan
   #       run: |
-  #         dotnet build /p:EnableSecurityCodeScan=true 2>&1 | tee /tmp/security-scan.log || true
+  #         dotnet build ${{ env.SOLUTION_FILE }} /p:EnableSecurityCodeScan=true 2>&1 | tee /tmp/security-scan.log || true
 
   #     - name: Parse SecurityCodeScan Results
   #       run: |
@@ -470,7 +472,7 @@ jobs:
   #           ${{ steps.parse.outputs.grype_critical }}
   #         ))
   #         curl -X POST -H 'Content-type: application/json' \
-  #         --data "{\"text\":\"🚨 Critical container vulnerabilities: $TOTAL_CRITICAL in ${{ github.repository }}\"}" \
+  #         --data "{\"text\":\"🚨 Critical container vulnerabilities: $TOTAL_CRITICAL in demo-dotnet-application\"}" \
   #         "$SLACK_WEBHOOK_URL"
 
   #     - name: Fail on Critical
@@ -558,7 +560,7 @@ jobs:
   #         cat > reports/iac-summary.md << EOF
   #         # 🏗️ IaC Security Report
 
-  #         Repo: ${{ github.repository }}
+  #         Repo: demo-dotnet-application
   #         Branch: ${{ github.ref }}
 
   #         ## Checkov Results
@@ -580,7 +582,7 @@ jobs:
   #       run: |
   #         if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
   #         curl -X POST -H 'Content-type: application/json' \
-  #         --data "{\"text\":\"🚨 IaC critical issues in ${{ github.repository }} | Critical: ${{ steps.parse.outputs.checkov_critical }}\"}" \
+  #         --data "{\"text\":\"🚨 IaC critical issues in demo-dotnet-application | Critical: ${{ steps.parse.outputs.checkov_critical }}\"}" \
   #         "$SLACK_WEBHOOK_URL"
 
   #     - name: Fail on Issues
@@ -616,14 +618,14 @@ jobs:
   #         dotnet-version: ${{ env.DOTNET_VERSION }}
 
   #     - name: Restore NuGet packages
-  #       run: dotnet restore
+  #       run: dotnet restore ${{ env.SOLUTION_FILE }}
 
   #     - name: Build project
-  #       run: dotnet build --configuration Release --no-restore
+  #       run: dotnet build ${{ env.SOLUTION_FILE }} --configuration Release --no-restore
 
   #     - name: Run unit tests with coverage
   #       run: |
-  #         dotnet test \
+  #         dotnet test ${{ env.SOLUTION_FILE }} \
   #           --configuration Release \
   #           --no-build \
   #           --verbosity normal \
@@ -840,9 +842,9 @@ jobs:
   #       id: report
   #       run: |
   #         cat > SECURITY_REPORT.md << EOF
-  #         # 🔐 DevSecOps Security Report - .NET Application
+  #         # 🔐 DevSecOps Security Report - demo-dotnet-application
 
-  #         **Repository:** ${{ github.repository }}
+  #         **Repository:** demo-dotnet-application
   #         **Branch:** ${{ github.ref }}
   #         **Commit:** ${{ github.sha }}
   #         **Date:** $(date -u)
@@ -908,7 +910,7 @@ jobs:
   #               "type": "section",
   #               "text": {
   #                 "type": "mrkdwn",
-  #                 "text": "*All security checks passed*\nRepo: ${{ github.repository }}\nCommit: ${{ github.sha }}"
+  #                 "text": "*All security checks passed*\nRepo: demo-dotnet-application\nCommit: ${{ github.sha }}"
   #               }
   #             }
   #           ]
@@ -933,7 +935,7 @@ jobs:
   #               "type": "section",
   #               "text": {
   #                 "type": "mrkdwn",
-  #                 "text": "*Security issues detected*\nRepo: ${{ github.repository }}\nFailed stages: ${{ steps.collect.outputs.failed }}"
+  #                 "text": "*Security issues detected*\nRepo: demo-dotnet-application\nFailed stages: ${{ steps.collect.outputs.failed }}"
   #               }
   #             }
   #           ]
@@ -1005,7 +1007,7 @@ jobs:
   #         cat <<EOF
 
   #         ╔════════════════════════════════════════════════════════╗
-  #         ║   🔐 DevSecOps Pipeline Final Status Report (.NET)     ║
+  #         ║  🔐 DevSecOps Pipeline Status - demo-dotnet-application║
   #         ╚════════════════════════════════════════════════════════╝
 
   #         🔴 CRITICAL:
@@ -1057,7 +1059,7 @@ jobs:
   #               "type": "section",
   #               "text": {
   #                 "type": "mrkdwn",
-  #                 "text": "*CRITICAL SECURITY FAILURE*\nRepo: ${{ github.repository }}\nFailed: ${{ steps.collect.outputs.critical_failed }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Pipeline>"
+  #                 "text": "*CRITICAL SECURITY FAILURE*\nRepo: demo-dotnet-application\nFailed: ${{ steps.collect.outputs.critical_failed }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Pipeline>"
   #               }
   #             }
   #           ]
@@ -1082,7 +1084,7 @@ jobs:
   #               "type": "section",
   #               "text": {
   #                 "type": "mrkdwn",
-  #                 "text": "*NON-CRITICAL ISSUES*\nRepo: ${{ github.repository }}\nCount: ${{ steps.collect.outputs.noncritical_failed }}\nMerge allowed"
+  #                 "text": "*NON-CRITICAL ISSUES*\nRepo: demo-dotnet-application\nCount: ${{ steps.collect.outputs.noncritical_failed }}\nMerge allowed"
   #               }
   #             }
   #           ]
@@ -1107,7 +1109,7 @@ jobs:
   #               "type": "section",
   #               "text": {
   #                 "type": "mrkdwn",
-  #                 "text": "*ALL CHECKS PASSED*\nRepo: ${{ github.repository }}\nReady for deployment 🚀"
+  #                 "text": "*ALL CHECKS PASSED*\nRepo: demo-dotnet-application\nReady for deployment 🚀"
   #               }
   #             }
   #           ]
