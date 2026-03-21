@@ -1,23 +1,62 @@
-name: Diagnose Project Paths
+name: Build and Analyze .NET Project
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
-  diagnose:
+  build:
+    name: Build and Analyze
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: List all files
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install SonarScanner
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Install dotnet-coverage
+        run: dotnet tool install --global dotnet-coverage
+
+      - name: Begin Sonar Analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          echo "=== ROOT DIRECTORY ==="
-          ls -la
-          echo ""
-          echo "=== All .csproj files (full paths) ==="
-          find . -name "*.csproj" -type f
-          echo ""
-          echo "=== Check if TodoApi.csproj exists ==="
-          test -f "./dotnet/TodoApi/TodoApi.csproj" && echo "✓ Found: ./dotnet/TodoApi/TodoApi.csproj" || echo "✗ NOT FOUND: ./dotnet/TodoApi/TodoApi.csproj"
-          test -f "./TodoApi/TodoApi.csproj" && echo "✓ Found: ./TodoApi/TodoApi.csproj" || echo "✗ NOT FOUND: ./TodoApi/TodoApi.csproj"
+          dotnet-sonarscanner begin \
+            /k:"todo-app" \
+            /n:"todo-app" \
+            /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
+            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.qualitygate.wait=true \
+            /d:sonar.cs.vscoveragexml.reportsPaths=coverage.xml
+
+      - name: Restore Dependencies
+        run: dotnet restore TodoApi/TodoApi.csproj
+
+      - name: Build Main Project
+        run: dotnet build TodoApi/TodoApi.csproj --no-incremental --configuration Release --no-restore
+
+      - name: Build Test Project
+        run: dotnet build TodoApi.Tests/TodoApi.Tests.csproj --no-incremental --configuration Release --no-restore
+
+      - name: Run Tests with Coverage
+        run: |
+          dotnet-coverage collect \
+            "dotnet test TodoApi.Tests/TodoApi.Tests.csproj --no-build --configuration Release" \
+            -f xml \
+            -o coverage.xml
+
+      - name: End Sonar Analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          dotnet-sonarscanner end \
+            /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
