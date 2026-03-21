@@ -38,8 +38,11 @@ jobs:
             /d:sonar.qualitygate.wait=true \
             /d:sonar.cs.vscoveragexml.reportsPaths=coverage.xml
 
-      - name: Restore Dependencies
+      - name: Restore Dependencies - Main Project
         run: dotnet restore TodoApi/TodoApi.csproj
+
+      - name: Restore Dependencies - Test Project
+        run: dotnet restore TodoApi.Tests/TodoApi.Tests.csproj
 
       - name: Build Main Project
         run: dotnet build TodoApi/TodoApi.csproj --no-incremental --configuration Release --no-restore
