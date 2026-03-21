@@ -37,7 +37,8 @@ jobs:
         sonarQualityGateWait: true # Fails the step if the QG fails
         # Optional: set a timeout in seconds for the QG check (default is 300s)
         # sonarQualityGateTimeout: 300 
+        sonarHostname: http://44.203.96.47:9000/
       env:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         # SONAR_HOST_URL is optional for SonarCloud, required for SonarQube self-hosted
-        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        # SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
