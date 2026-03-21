@@ -1,59 +1,81 @@
-using Microsoft.EntityFrameworkCore;
-using TodoApi.Data;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Moq;
+using Xunit;
 using TodoApi.Models;
 using TodoApi.Services;
-using Xunit;
+using Microsoft.EntityFrameworkCore;
 
-namespace TodoApi.Tests
+namespace TodoApi.Tests;
+
+public class TodoServiceTests
 {
-    public class TodoServiceTests
+    [Fact]
+    public void AddTodoItem_ShouldAddItemToDatabase()
     {
-        private AppDbContext GetDbContext()
+        // Arrange
+        var mockDbSet = new Mock<DbSet<TodoItem>>();
+        var mockContext = new Mock<AppDbContext>();
+        mockContext.Setup(c => c.TodoItems).Returns(mockDbSet.Object);
+        
+        var todoService = new TodoService(mockContext.Object);
+        var newTodoItem = new TodoItem { Id = Guid.NewGuid(), Title = "Test Task", IsCompleted = false };
+
+        // Act
+        todoService.AddTodoItem(newTodoItem);
+
+        // Assert
+        mockDbSet.Verify(m => m.Add(It.IsAny<TodoItem>()), Times.Once());
+        mockContext.Verify(m => m.SaveChanges(), Times.Once());
+    }
+
+    [Fact]
+    public void GetAllTodoItems_ShouldReturnAllItems()
+    {
+        // Arrange
+        var todoItems = new List<TodoItem>
         {
-            var options = new DbContextOptionsBuilder<AppDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .Options;
+            new TodoItem { Id = Guid.NewGuid(), Title = "Task 1", IsCompleted = false },
+            new TodoItem { Id = Guid.NewGuid(), Title = "Task 2", IsCompleted = true }
+        };
 
-            return new AppDbContext(options);
-        }
+        var mockDbSet = new Mock<DbSet<TodoItem>>();
+        mockDbSet.As<IQueryable<TodoItem>>().Setup(m => m.Provider).Returns(todoItems.AsQueryable().Provider);
+        mockDbSet.As<IQueryable<TodoItem>>().Setup(m => m.Expression).Returns(todoItems.AsQueryable().Expression);
+        mockDbSet.As<IQueryable<TodoItem>>().Setup(m => m.ElementType).Returns(todoItems.AsQueryable().ElementType);
+        mockDbSet.As<IQueryable<TodoItem>>().Setup(m => m.GetEnumerator()).Returns(todoItems.GetEnumerator());
 
-        [Fact]
-        public void Add_Todo_Should_Work()
-        {
-            var context = GetDbContext();
-            var service = new TodoService(context);
+        var mockContext = new Mock<AppDbContext>();
+        mockContext.Setup(c => c.TodoItems).Returns(mockDbSet.Object);
 
-            var result = service.Add(new TodoItem { Title = "Test" });
+        var todoService = new TodoService(mockContext.Object);
 
-            Assert.NotNull(result);
-            Assert.Equal(1, context.Todos.Count());
-        }
+        // Act
+        var result = todoService.GetAllTodoItems();
 
-        [Fact]
-        public void GetAll_Should_Return_Items()
-        {
-            var context = GetDbContext();
-            context.Todos.Add(new TodoItem { Title = "Test" });
-            context.SaveChanges();
+        // Assert
+        Assert.Equal(2, result.Count());
+    }
 
-            var service = new TodoService(context);
-            var result = service.GetAll();
+    [Fact]
+    public void DeleteTodoItem_ShouldRemoveItemFromDatabase()
+    {
+        // Arrange
+        var itemId = Guid.NewGuid();
+        var todoItem = new TodoItem { Id = itemId, Title = "Test Task", IsCompleted = false };
 
-            Assert.Single(result);
-        }
+        var mockDbSet = new Mock<DbSet<TodoItem>>();
+        var mockContext = new Mock<AppDbContext>();
+        mockContext.Setup(c => c.TodoItems).Returns(mockDbSet.Object);
 
-        [Fact]
-        public void Delete_Should_Remove_Item()
-        {
-            var context = GetDbContext();
-            context.Todos.Add(new TodoItem { Id = 1, Title = "Test" });
-            context.SaveChanges();
+        var todoService = new TodoService(mockContext.Object);
 
-            var service = new TodoService(context);
-            var deleted = service.Delete(1);
+        // Act
+        todoService.DeleteTodoItem(itemId);
 
-            Assert.True(deleted);
-            Assert.Empty(context.Todos);
-        }
+        // Assert
+        mockDbSet.Verify(m => m.Remove(It.IsAny<TodoItem>()), Times.Once());
+        mockContext.Verify(m => m.SaveChanges(), Times.Once());
     }
 }
