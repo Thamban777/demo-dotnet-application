@@ -1,65 +1,43 @@
 name: Build and Analyze .NET Project
+
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   pull_request:
-    types: [opened, synchronize, reopened]
+    branches:
+      - main
 
 jobs:
   build:
-    name: Build and Analyze
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        # Fetch depth 0 is required for Sonar analysis
+        fetch-depth: 0
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x' # Or your specific .NET version
 
-      - name: Install SonarScanner
-        run: dotnet tool install --global dotnet-sonarscanner
+    # Optional: Restore dependencies if needed
+    # - name: Restore dependencies
+    #   run: dotnet restore
 
-      - name: Install dotnet-coverage
-        run: dotnet tool install --global dotnet-coverage
-
-      - name: Begin Sonar Analysis
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          dotnet-sonarscanner begin \
-            /k:"todo-app" \
-            /n:"todo-app" \
-            /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
-            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
-            /d:sonar.qualitygate.wait=true \
-            /d:sonar.cs.vscoveragexml.reportsPaths=coverage.xml
-
-      - name: Restore Dependencies - Main Project
-        run: dotnet restore TodoApi/TodoApi.csproj
-
-      - name: Restore Dependencies - Test Project
-        run: dotnet restore TodoApi.Tests/TodoApi.Tests.csproj
-
-      - name: Build Main Project
-        run: dotnet build TodoApi/TodoApi.csproj --no-incremental --configuration Release --no-restore
-
-      - name: Build Test Project
-        run: dotnet build TodoApi.Tests/TodoApi.Tests.csproj --no-incremental --configuration Release --no-restore
-
-      - name: Run Tests with Coverage
-        run: |
-          dotnet-coverage collect \
-            "dotnet test TodoApi.Tests/TodoApi.Tests.csproj --no-build --configuration Release" \
-            -f xml \
-            -o coverage.xml
-
-      - name: End Sonar Analysis
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          dotnet-sonarscanner end \
-            /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
+    - name: SonarScanner for .NET
+      uses: highbyte/sonarscan-dotnet@v2.5.0
+      with:
+        sonarProjectKey: todo-app
+        sonarProjectName: todo-app
+        # The following parameters are crucial for the Quality Gate check:
+        sonarQualityGateWait: true # Fails the step if the QG fails
+        # Optional: set a timeout in seconds for the QG check (default is 300s)
+        # sonarQualityGateTimeout: 300 
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # SONAR_HOST_URL is optional for SonarCloud, required for SonarQube self-hosted
+        # SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
